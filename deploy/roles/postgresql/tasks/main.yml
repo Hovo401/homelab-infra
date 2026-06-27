@@ -1,0 +1,79 @@
+---
+- name: Install PostgreSQL
+  ansible.builtin.apt:
+    name: [postgresql, postgresql-contrib, python3-psycopg2, acl]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Find the active postgresql.conf
+  ansible.builtin.find:
+    paths: /etc/postgresql
+    patterns: postgresql.conf
+    recurse: true
+  register: pg_conf_search
+
+- name: Set postgres config directory fact
+  ansible.builtin.set_fact:
+    pg_conf_dir: "{{ pg_conf_search.files[0].path | dirname }}"
+
+# Ubuntu's postgresql.conf already has `include_dir = 'conf.d'`, so dropping a
+# file here tunes the server without touching (or fighting over) the
+# distro-managed main config file.
+- name: Deploy dev-tuned postgresql settings
+  ansible.builtin.template:
+    src: tuning.conf.j2
+    dest: "{{ pg_conf_dir }}/conf.d/99-diotek-tuning.conf"
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  notify: restart postgresql
+
+- name: Apply pending postgresql config changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Allow the local backend to connect over loopback
+  community.postgresql.postgresql_pg_hba:
+    dest: "{{ pg_conf_dir }}/pg_hba.conf"
+    contype: host
+    address: 127.0.0.1/32
+    databases: "{{ db_name }}"
+    users: "{{ db_user }}"
+    method: md5
+  notify: reload postgresql
+
+- name: Allow PostgreSQL access from admin CIDRs
+  community.postgresql.postgresql_pg_hba:
+    dest: "{{ pg_conf_dir }}/pg_hba.conf"
+    contype: host
+    address: "{{ item }}"
+    databases: "{{ db_name }}"
+    users: "{{ db_user }}"
+    method: md5
+  loop: "{{ admin_allowed_cidrs }}"
+  notify: reload postgresql
+
+- name: Apply pending postgresql config changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure postgresql is enabled and running
+  ansible.builtin.systemd:
+    name: postgresql
+    enabled: true
+    state: started
+
+- name: Create application database
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_db:
+    name: "{{ db_name }}"
+
+- name: Create application database role
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    db: "{{ db_name }}"
+    name: "{{ db_user }}"
+    password: "{{ db_password }}"
+    priv: ALL
+    state: present

@@ -1,0 +1,8 @@
+---
+# Provides community.general.ufw (firewall role) and the
+# community.postgresql db/user modules (postgresql role).
+# Bundled in the willhallonline/ansible image; install explicitly for a bare
+# control machine: ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: community.general
+  - name: community.postgresql

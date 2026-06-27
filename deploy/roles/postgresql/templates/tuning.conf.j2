@@ -1,0 +1,7 @@
+# Dev-tuned for a small, low-resource shared box — see deploy-diotek/README.md
+# before raising these on a dedicated production server.
+listen_addresses = '*'
+shared_buffers = '{{ postgres_shared_buffers }}'
+max_connections = {{ postgres_max_connections }}
+logging_collector = off
+log_min_duration_statement = -1

@@ -1,0 +1,91 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ vhost.domain }};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root {{ certbot_webroot }};
+        default_type "text/plain";
+    }
+
+{% if tls_enabled %}
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name {{ vhost.domain }};
+
+    ssl_certificate     /etc/letsencrypt/live/{{ vhost.domain }}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{ vhost.domain }}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=63072000" always;
+    add_header X-Content-Type-Options    "nosniff"          always;
+    add_header X-Frame-Options           "SAMEORIGIN"       always;
+
+    client_max_body_size 0;
+
+    # S3 API
+    location / {
+{% for cidr in admin_allowed_cidrs %}
+        allow {{ cidr }};
+{% endfor %}
+        deny all;
+
+        proxy_pass         http://127.0.0.1:{{ minio_port }};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        chunked_transfer_encoding off;
+    }
+
+    # Web console (path-prefixed so API and console share one domain)
+    location /minio-console/ {
+{% for cidr in admin_allowed_cidrs %}
+        allow {{ cidr }};
+{% endfor %}
+        deny all;
+
+        rewrite ^/minio-console/(.*) /$1 break;
+        proxy_pass         http://127.0.0.1:{{ minio_console_port }};
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+    }
+}
+{% else %}
+    location / {
+{% for cidr in admin_allowed_cidrs %}
+        allow {{ cidr }};
+{% endfor %}
+        deny all;
+
+        proxy_pass       http://127.0.0.1:{{ minio_port }};
+        proxy_set_header Host $host;
+        chunked_transfer_encoding off;
+    }
+
+    location /minio-console/ {
+{% for cidr in admin_allowed_cidrs %}
+        allow {{ cidr }};
+{% endfor %}
+        deny all;
+
+        rewrite ^/minio-console/(.*) /$1 break;
+        proxy_pass       http://127.0.0.1:{{ minio_console_port }};
+        proxy_set_header Host $host;
+    }
+}
+{% endif %}

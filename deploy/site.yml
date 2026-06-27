@@ -1,0 +1,17 @@
+---
+- name: Provision web server for diotek.pp.ua
+  hosts: web
+  become: true
+  roles:
+    - role: firewall
+      tags: [firewall, ufw]
+    - role: nodejs
+      tags: [nodejs]
+    - role: postgresql
+      tags: [postgresql, db]
+    - role: minio
+      tags: [minio]
+    - role: webserver
+      tags: [webserver, nginx, tls]
+    - role: app
+      tags: [app]

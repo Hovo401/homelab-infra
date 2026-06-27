@@ -1,0 +1,125 @@
+---
+- name: Check the installed nginx package version
+  ansible.builtin.command: dpkg-query -W -f='${Version}' nginx
+  register: nginx_pkg_version
+  failed_when: false
+  changed_when: false
+
+- name: Purge distro nginx before switching to nginx.org
+  ansible.builtin.apt:
+    name: [nginx, nginx-common, nginx-core]
+    state: absent
+    purge: true
+  when:
+    - nginx_pkg_version.rc == 0
+    - "'ubuntu' in nginx_pkg_version.stdout"
+
+- name: Add nginx.org signing key
+  ansible.builtin.get_url:
+    url: https://nginx.org/keys/nginx_signing.key
+    dest: /etc/apt/keyrings/nginx.asc
+    mode: "0644"
+
+- name: Add nginx.org apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/nginx.asc] http://nginx.org/packages/{{ nginx_repo_branch }}ubuntu {{ ansible_distribution_release }} nginx"
+    filename: nginx
+    state: present
+
+- name: Pin nginx packages to the nginx.org origin
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/99-nginx-org.pref
+    mode: "0644"
+    content: |
+      Package: nginx*
+      Pin: origin nginx.org
+      Pin-Priority: 900
+
+- name: Install nginx and certbot
+  ansible.builtin.apt:
+    name: [nginx, certbot]
+    state: present
+    update_cache: true
+
+- name: Ensure the nginx TLS directory exists
+  ansible.builtin.file:
+    path: /etc/nginx/ssl
+    state: directory
+    mode: "0700"
+
+- name: Generate a self-signed cert for the catch-all vhost
+  ansible.builtin.command: >
+    openssl req -x509 -nodes -newkey rsa:2048
+    -keyout {{ nginx_default_key }} -out {{ nginx_default_cert }}
+    -days 3650 -subj "/CN=invalid"
+  args:
+    creates: "{{ nginx_default_cert }}"
+
+# Replaces the shipped default.conf. A catch-all default_server on 80/443 drops
+# any request whose Host/SNI doesn't match a real server_name, so neither real
+# vhost stops answering for arbitrary domains pointed at this IP.
+- name: Deploy the catch-all default vhost
+  ansible.builtin.template:
+    src: default.conf.j2
+    dest: /etc/nginx/conf.d/default.conf
+    mode: "0644"
+  notify:
+    - validate nginx
+    - reload nginx
+
+- name: Ensure the ACME webroot exists
+  ansible.builtin.file:
+    path: "{{ certbot_webroot }}"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+# Two TLS vhosts on this host: the app domain and the MinIO subdomain. Each
+# goes through the same two-phase ACME→TLS flow, factored out so it isn't
+# duplicated.
+- name: Provision TLS vhosts
+  ansible.builtin.include_tasks: cert_and_vhost.yml
+  loop:
+    - { domain: "{{ domain }}", template: vhost.conf.j2 }
+    - { domain: "{{ minio_domain }}", template: minio-vhost.conf.j2 }
+  loop_control:
+    loop_var: vhost
+
+- name: Ensure nginx is enabled and running
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+
+# A lost handler (e.g. an aborted run between writing a TLS vhost and the
+# end-of-play flush) leaves the on-disk config correct but the running nginx
+# stuck on the old one. The template then stays idempotent on re-run, so no
+# handler ever fires again. Reconcile against the live socket instead.
+- name: Check whether nginx is actually serving TLS
+  ansible.builtin.command: ss -ltnH sport = :443
+  register: nginx_tls_socket
+  changed_when: false
+  when: tls_enabled
+
+- name: Reload nginx if it is not listening on 443 yet
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+  when:
+    - tls_enabled
+    - nginx_tls_socket.stdout | trim == ""
+
+- name: Add nginx reload hook for certificate renewals
+  ansible.builtin.copy:
+    dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      systemctl reload nginx
+
+- name: Ensure certbot renewal timer is enabled
+  ansible.builtin.systemd:
+    name: certbot.timer
+    enabled: true
+    state: started

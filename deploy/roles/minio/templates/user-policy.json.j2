@@ -1,0 +1,29 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket"
+            ],
+            "Resource": [
+{% for bucket in item.buckets %}
+                "arn:aws:s3:::{{ bucket }}"{{ "," if not loop.last else "" }}
+{% endfor %}
+            ]
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:DeleteObject"
+            ],
+            "Resource": [
+{% for bucket in item.buckets %}
+                "arn:aws:s3:::{{ bucket }}/*"{{ "," if not loop.last else "" }}
+{% endfor %}
+            ]
+        }
+    ]
+}

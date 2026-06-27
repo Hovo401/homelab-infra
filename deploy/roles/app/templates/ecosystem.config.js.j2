@@ -1,0 +1,13 @@
+module.exports = {
+  apps: [
+    {
+      name: 'diotek-backend',
+      cwd: '{{ app_dir }}/current',
+      script: 'dist/src/main.js',
+      env: {
+        NODE_ENV: 'production',
+        PORT: {{ backend_port }},
+      },
+    },
+  ],
+};

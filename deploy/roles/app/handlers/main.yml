@@ -1,0 +1,11 @@
+---
+- name: reload pm2 app
+  ansible.builtin.shell: >
+    set -o pipefail &&
+    pm2 describe diotek-backend >/dev/null 2>&1 &&
+    pm2 reload {{ app_dir }}/ecosystem.config.js --update-env && pm2 save
+    || true
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: "{{ ansible_user }}"

@@ -1,0 +1,15 @@
+# Catch-all: anything whose Host/SNI doesn't match a real server_name lands
+# here and the connection is dropped. Without this, the single real vhost
+# would answer for every domain pointed at this IP.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+
+    ssl_certificate     {{ nginx_default_cert }};
+    ssl_certificate_key {{ nginx_default_key }};
+
+    return 444;
+}

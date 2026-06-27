@@ -1,0 +1,56 @@
+---
+- name: Install rsync (used by CI to ship releases)
+  ansible.builtin.apt:
+    name: rsync
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure the application group exists
+  ansible.builtin.group:
+    name: "{{ ansible_user }}"
+    state: present
+
+- name: Create backend application directory
+  ansible.builtin.file:
+    path: "{{ app_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Create release layout directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+  loop:
+    - "{{ app_dir }}/releases"
+    - "{{ app_dir }}/shared"
+
+- name: Create frontend static directory
+  ansible.builtin.file:
+    path: "{{ frontend_static_dir }}"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+- name: Allow deploy user to publish frontend without a password
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/diotek-deploy
+    mode: "0440"
+    validate: visudo -cf %s
+    content: |
+      {{ ansible_user }} ALL=(root) NOPASSWD: /usr/bin/rsync, /usr/bin/chown
+
+- name: Deploy pm2 ecosystem config
+  ansible.builtin.template:
+    src: ecosystem.config.js.j2
+    dest: "{{ app_dir }}/ecosystem.config.js"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0644"
+  notify: reload pm2 app

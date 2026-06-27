@@ -1,0 +1,48 @@
+---
+# Included once per item in the `vhosts` loop (see tasks/main.yml). `vhost` is
+# the loop var: {domain: ..., template: ...}.
+
+- name: "Detect an existing certificate for {{ vhost.domain }}"
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ vhost.domain }}/fullchain.pem"
+  register: cert_stat
+
+- name: "Set TLS state for {{ vhost.domain }}"
+  ansible.builtin.set_fact:
+    tls_enabled: "{{ cert_stat.stat.exists }}"
+
+- name: "Deploy vhost {{ vhost.domain }} (phase 1)"
+  ansible.builtin.template:
+    src: "{{ vhost.template }}"
+    dest: "/etc/nginx/conf.d/{{ vhost.domain }}.conf"
+    mode: "0644"
+  notify:
+    - validate nginx
+    - reload nginx
+
+- name: Apply pending nginx changes
+  ansible.builtin.meta: flush_handlers
+
+- name: "Obtain Let's Encrypt certificate for {{ vhost.domain }}"
+  ansible.builtin.command: >
+    certbot certonly --webroot -w {{ certbot_webroot }} -d {{ vhost.domain }}
+    --non-interactive --agree-tos
+    {{ ('--email ' + letsencrypt_email) if letsencrypt_email else '--register-unsafely-without-email' }}
+  args:
+    creates: "/etc/letsencrypt/live/{{ vhost.domain }}/fullchain.pem"
+  when: not tls_enabled
+
+- name: "Mark TLS as enabled after issuance for {{ vhost.domain }}"
+  ansible.builtin.set_fact:
+    tls_enabled: true
+  when: not cert_stat.stat.exists
+
+- name: "Deploy vhost {{ vhost.domain }} (phase 2 — with TLS)"
+  ansible.builtin.template:
+    src: "{{ vhost.template }}"
+    dest: "/etc/nginx/conf.d/{{ vhost.domain }}.conf"
+    mode: "0644"
+  notify:
+    - validate nginx
+    - reload nginx
+  when: not cert_stat.stat.exists

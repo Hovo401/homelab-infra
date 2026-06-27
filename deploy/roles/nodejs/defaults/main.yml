@@ -1,0 +1,4 @@
+---
+node_major: "24"
+pm2_user: "{{ ansible_user }}"
+pm2_version: "5.4.3"

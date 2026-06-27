@@ -1,0 +1,6 @@
+---
+nginx_repo_branch: ""
+certbot_webroot: /var/www/certbot
+letsencrypt_email: ""
+nginx_default_cert: /etc/nginx/ssl/default.crt
+nginx_default_key: /etc/nginx/ssl/default.key

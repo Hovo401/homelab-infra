@@ -1,0 +1,19 @@
+---
+minio_binary_url: https://dl.min.io/server/minio/release/linux-amd64/minio
+mc_binary_url: https://dl.min.io/client/mc/release/linux-amd64/mc
+
+# The console's Access Policy UI was removed from newer MinIO Community
+# Edition builds, so these buckets' policies are set via the mc CLI instead.
+minio_public_buckets:
+  - diotek
+  - amarant
+  - public
+
+# Scoped MinIO users — each gets its own access/secret key and a policy
+# limited to just its own bucket(s), instead of sharing minio_root_user.
+# minio_scoped_users:
+#   - name: diotek-app
+#     password: "{{ vault_minio_diotek_app_password }}" # required, >= 8 chars
+#     buckets:
+#       - diotek
+minio_scoped_users: []

@@ -1,0 +1,175 @@
+---
+- name: Ensure minio_root_password is set
+  ansible.builtin.assert:
+    that:
+      - minio_root_password | length >= 8
+    fail_msg: >-
+      minio_root_password is empty or shorter than 8 characters. MinIO refuses
+      to start without it. Pass it via --extra-vars or ansible-vault, e.g.
+      --extra-vars "minio_root_password=..."; never commit a real value.
+
+- name: Create minio system group
+  ansible.builtin.group:
+    name: minio
+    system: true
+
+- name: Create minio system user
+  ansible.builtin.user:
+    name: minio
+    group: minio
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ minio_data_dir }}"
+    create_home: false
+
+- name: Create MinIO data directory
+  ansible.builtin.file:
+    path: "{{ minio_data_dir }}"
+    state: directory
+    owner: minio
+    group: minio
+    mode: "0750"
+
+- name: Download the MinIO server binary
+  ansible.builtin.get_url:
+    url: "{{ minio_binary_url }}"
+    dest: /usr/local/bin/minio
+    mode: "0755"
+  notify: restart minio
+
+# Bound to loopback only (see MINIO_OPTS in minio.env.j2) — the only
+# consumers are the co-located Node backend and the nginx vhost for
+# minio.diotek.pp.ua, both on this same host.
+- name: Deploy MinIO environment file
+  ansible.builtin.template:
+    src: minio.env.j2
+    dest: /etc/default/minio
+    owner: root
+    group: minio
+    mode: "0640"
+  notify: restart minio
+
+- name: Deploy MinIO systemd unit
+  ansible.builtin.template:
+    src: minio.service.j2
+    dest: /etc/systemd/system/minio.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart minio
+
+- name: Apply pending MinIO config changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure MinIO is enabled and running
+  ansible.builtin.systemd:
+    name: minio
+    enabled: true
+    state: started
+
+- name: Wait for MinIO to accept connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ minio_port }}"
+    timeout: 30
+
+- name: Download the mc client binary
+  ansible.builtin.get_url:
+    url: "{{ mc_binary_url }}"
+    dest: /usr/local/bin/mc
+    mode: "0755"
+
+- name: Configure mc alias for the local MinIO server
+  ansible.builtin.command:
+    cmd: >-
+      mc alias set local http://127.0.0.1:{{ minio_port }}
+      {{ minio_root_user }} {{ minio_root_password }}
+  changed_when: false
+
+- name: Ensure the public buckets exist
+  ansible.builtin.command:
+    cmd: "mc mb --ignore-existing local/{{ item }}"
+  register: mc_mb
+  changed_when: "'created successfully' in mc_mb.stdout"
+  loop: "{{ minio_public_buckets }}"
+
+# Console no longer exposes an Access Policy control (see minio_public_buckets
+# comment in defaults), so anonymous read/write is set here instead of by hand.
+- name: Set the buckets' anonymous access policy to public
+  ansible.builtin.command:
+    cmd: "mc anonymous set public local/{{ item }}"
+  register: mc_policy
+  changed_when: "'set to' in mc_policy.stdout"
+  loop: "{{ minio_public_buckets }}"
+
+- name: Ensure scoped MinIO user passwords are set
+  ansible.builtin.assert:
+    that:
+      - item.password | length >= 8
+    fail_msg: >-
+      minio_scoped_users entry '{{ item.name }}' has no password or it is
+      shorter than 8 characters. Pass real values via --extra-vars or
+      ansible-vault; never commit them.
+  loop: "{{ minio_scoped_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Ensure scoped buckets exist before scoping users to them
+  ansible.builtin.command:
+    cmd: "mc mb --ignore-existing local/{{ item.1 }}"
+  register: mc_scoped_mb
+  changed_when: "'created successfully' in mc_scoped_mb.stdout"
+  loop: "{{ minio_scoped_users | subelements('buckets') }}"
+  loop_control:
+    label: "{{ item.1 }}"
+
+- name: Create scoped MinIO users
+  ansible.builtin.command:
+    cmd: "mc admin user add local {{ item.name }} {{ item.password }}"
+  register: mc_user_add
+  changed_when: "'Added user' in mc_user_add.stdout"
+  no_log: true
+  loop: "{{ minio_scoped_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Render per-user access policy documents
+  ansible.builtin.template:
+    src: user-policy.json.j2
+    dest: "/tmp/minio-policy-{{ item.name }}.json"
+    mode: "0600"
+  register: mc_policy_doc
+  loop: "{{ minio_scoped_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Create/update scoped user policies
+  ansible.builtin.command:
+    cmd: >-
+      mc admin policy create local {{ item.name }}-policy
+      /tmp/minio-policy-{{ item.name }}.json
+  register: mc_policy_create
+  changed_when: "'Created policy' in mc_policy_create.stdout"
+  loop: "{{ minio_scoped_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Attach policies to scoped users
+  ansible.builtin.command:
+    cmd: "mc admin policy attach local {{ item.name }}-policy --user={{ item.name }}"
+  register: mc_policy_attach
+  changed_when: "'attached to user' in mc_policy_attach.stdout"
+  failed_when: >-
+    mc_policy_attach.rc != 0 and
+    'already attached' not in mc_policy_attach.stderr
+  loop: "{{ minio_scoped_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Remove rendered per-user policy documents
+  ansible.builtin.file:
+    path: "/tmp/minio-policy-{{ item.name }}.json"
+    state: absent
+  loop: "{{ minio_scoped_users }}"
+  loop_control:
+    label: "{{ item.name }}"
