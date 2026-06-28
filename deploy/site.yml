@@ -2,6 +2,8 @@
 - name: Provision web server for diotek.pp.ua
   hosts: web
   become: true
+  vars_files:
+    - group_vars/vault.yml
   roles:
     - role: firewall
       tags: [firewall, ufw]
@@ -11,6 +13,8 @@
       tags: [postgresql, db]
     - role: minio
       tags: [minio]
+    - role: n8n
+      tags: [n8n]
     - role: webserver
       tags: [webserver, nginx, tls]
     - role: app

@@ -83,6 +83,7 @@
   loop:
     - { domain: "{{ domain }}", template: vhost.conf.j2 }
     - { domain: "{{ minio_domain }}", template: minio-vhost.conf.j2 }
+    - { domain: "{{ n8n_domain }}", template: n8n-vhost.conf.j2 }
   loop_control:
     loop_var: vhost
 

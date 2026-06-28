@@ -7,9 +7,12 @@ server:
 - Node.js (NodeSource) + pm2 with systemd boot resurrection
 - PostgreSQL (native apt package), dev-tuned for a small/shared box
 - MinIO (native binary + systemd), single-drive mode, bound to `127.0.0.1`
-- nginx from nginx.org: TLS vhost for the SPA + `/api/`, and a second TLS
-  vhost for `minio.diotek.pp.ua` (S3 API + web console, IP-restricted)
-- Let's Encrypt certs via webroot for both vhosts, auto-renewal + reload hook
+- n8n (npm global package + systemd), backed by its own PostgreSQL database,
+  bound to `127.0.0.1`
+- nginx from nginx.org: TLS vhost for the SPA + `/api/`, a second TLS vhost
+  for `minio.diotek.pp.ua` (S3 API + web console, IP-restricted), and a third
+  for `n8n.diotek.pp.ua` (public, protected by n8n's own login)
+- Let's Encrypt certs via webroot for all three vhosts, auto-renewal + reload hook
 
 Target host lives in `inventory.ini`, values in `group_vars/all.yml`.
 
@@ -21,7 +24,7 @@ currently share one physical server as a temporary cost-saving measure, but
 neither one assumes the other exists:
 
 - Separate `inventory.ini`, `group_vars`, roles — no shared variables.
-- The `firewall` role here only *adds* ufw rules (SSH/80/443/Postgres-by-CIDR);
+- The `firewall` role here only _adds_ ufw rules (SSH/80/443/Postgres-by-CIDR);
   it never resets ufw or touches rules the other project added.
 - The `webserver` role here only manages its own `/etc/nginx/conf.d/<domain>.conf`
   files; it never touches nginx.conf or the other project's vhost files.
@@ -43,7 +46,8 @@ roles/
   nodejs/                Node.js + pm2 + pm2 systemd startup
   postgresql/            apt install, dev-tuned conf.d drop-in, pg_hba, db+role
   minio/                 binary + systemd unit, bound to 127.0.0.1 only
-  webserver/             nginx.org + 2 vhosts (app domain, minio subdomain) + certbot
+  n8n/                   npm global package + systemd unit, own Postgres db, bound to 127.0.0.1 only
+  webserver/             nginx.org + 3 vhosts (app domain, minio subdomain, n8n subdomain) + certbot
   app/                   app dirs + pm2 ecosystem config
 ```
 
@@ -53,58 +57,95 @@ roles/
   `ansible-galaxy collection install -r requirements.yml`
   (or use `run.ps1`, which runs a pinned `willhallonline/ansible` image)
 - SSH access to the target as the user in `inventory.ini`, with sudo
-- DNS for `domain` **and** `minio_domain` already point at the server
-  (certbot needs `:80` reachable on both names)
+- DNS for `domain`, `minio_domain`, **and** `n8n_domain` already point at the
+  server (certbot needs `:80` reachable on all three names)
 
 ## Usage
 
-```bash
-cd deploy-diotek
+```powershell
+cd deploy
+
+# default deploy command via Docker wrapper
+.\run.ps1
 
 # dry run
-ansible-playbook site.yml --ask-become-pass --check --diff \
-  --extra-vars "db_password=CHANGE_ME minio_root_password=CHANGE_ME"
+.\run.ps1 ansible-playbook site.yml --ask-become-pass --ask-vault-pass --check --diff
 
 # apply
-ansible-playbook site.yml --ask-become-pass \
-  --extra-vars "db_password=CHANGE_ME minio_root_password=CHANGE_ME"
+.\run.ps1 ansible-playbook site.yml --ask-become-pass --ask-vault-pass
+
+# alternative using a vault password file
+.\run.ps1 ansible-playbook site.yml --ask-become-pass --vault-password-file ~/.vault_pass.txt
 
 # overriding minio_scoped_users (a list) needs JSON, not key=value:
-ansible-playbook site.yml --ask-become-pass \
-  --extra-vars '{"minio_scoped_users": [{"name": "diotek-app", "password": "CHANGE_ME", "buckets": ["diotek"]}]}'
+.\run.ps1 ansible-playbook site.yml --ask-become-pass --ask-vault-pass \
+  --extra-vars '{"minio_scoped_users": [{"name": "diotek-app", "buckets": ["diotek"], "password": "CHANGE_ME"}]}'
 
 # one layer
-ansible-playbook site.yml --ask-become-pass --tags postgresql
+.\run.ps1 ansible-playbook site.yml --ask-become-pass --ask-vault-pass --tags postgresql
+```
+
+## Vault usage
+
+This project stores real secrets in `deploy/group_vars/vault.yml`.
+
+Use the Docker wrapper to manage that file without installing Ansible locally:
+
+```powershell
+cd deploy
+.\run.ps1 vault encrypt group_vars/vault.yml
+.\run.ps1 vault view group_vars/vault.yml
+.\run.ps1 vault edit group_vars/vault.yml
+.\run.ps1 vault decrypt group_vars/vault.yml
 ```
 
 Prefer an ansible-vault file over `--extra-vars` on a shared shell history;
 either way, **never** commit real values for `db_password` /
-`minio_root_password` — they default to empty strings in `group_vars/all.yml`.
+`minio_root_password` / `n8n_db_password` / `n8n_encryption_key` — they
+default to empty strings in `group_vars/all.yml` and should be set in
+`group_vars/vault.yml` instead.
+
+Create the encrypted vault file once:
+
+```powershell
+cd deploy
+copy group_vars\all.yml group_vars\vault.yml
+.\run.ps1 vault encrypt group_vars/vault.yml
+```
+
+Then run the playbook with `--ask-vault-pass` or `--vault-password-file`.
 
 ## Variables
 
-| Variable               | Where                     | Default                    |
-|-------------------------|---------------------------|-----------------------------|
-| `domain`                | group_vars/all.yml        | `diotek.pp.ua`              |
-| `minio_domain`          | group_vars/all.yml        | `minio.diotek.pp.ua`        |
-| `app_dir`               | group_vars/all.yml        | `/opt/diotek`                |
-| `frontend_static_dir`   | group_vars/all.yml        | `/var/www/diotek`            |
-| `backend_port`          | group_vars/all.yml        | `8001`                       |
-| `db_name` / `db_user`   | group_vars/all.yml        | `diotek`                     |
-| `db_password`           | group_vars/all.yml        | `""` — pass via `--extra-vars`/vault |
-| `minio_root_user`       | group_vars/all.yml        | `diotek-admin`               |
-| `minio_root_password`   | group_vars/all.yml        | `""` — pass via `--extra-vars`/vault |
-| `minio_port` / `minio_console_port` | group_vars/all.yml | `9000` / `9001` (loopback only) |
-| `admin_allowed_cidrs`   | group_vars/all.yml        | `["0.0.0.0/0"]` — open to all; restrict to specific CIDRs to lock down Postgres/MinIO |
-| `minio_public_buckets`  | roles/minio/defaults      | `["diotek"]`                 |
-| `minio_scoped_users`    | group_vars/all.yml        | per-user MinIO accounts, scoped by `mc admin policy` to only their `buckets` |
-| `node_major`            | roles/nodejs/defaults     | `"24"`                       |
-| `pm2_version`           | roles/nodejs/defaults     | `"5.4.3"`                    |
-| `ssh_port`              | roles/firewall/defaults   | `22`                         |
-| `nginx_repo_branch`     | roles/webserver/defaults | `""` (stable)                |
-| `certbot_webroot`       | roles/webserver/defaults | `/var/www/certbot`           |
-| `letsencrypt_email`     | roles/webserver/defaults | `""` (no email)              |
-| `postgres_shared_buffers` / `postgres_max_connections` | roles/postgresql/defaults | `32MB` / `20` |
+| Variable                                               | Where                     | Default                                                                                                 |
+| ------------------------------------------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `domain`                                               | group_vars/all.yml        | `diotek.pp.ua`                                                                                          |
+| `minio_domain`                                         | group_vars/all.yml        | `minio.diotek.pp.ua`                                                                                    |
+| `app_dir`                                              | group_vars/all.yml        | `/opt/diotek`                                                                                           |
+| `frontend_static_dir`                                  | group_vars/all.yml        | `/var/www/diotek`                                                                                       |
+| `backend_port`                                         | group_vars/all.yml        | `8001`                                                                                                  |
+| `db_name` / `db_user`                                  | group_vars/all.yml        | `diotek`                                                                                                |
+| `db_password`                                          | group_vars/all.yml        | `""` — pass via `--extra-vars`/vault                                                                    |
+| `minio_root_user`                                      | group_vars/all.yml        | `diotek-admin`                                                                                          |
+| `minio_root_password`                                  | group_vars/all.yml        | `""` — pass via `--extra-vars`/vault                                                                    |
+| `minio_port` / `minio_console_port`                    | group_vars/all.yml        | `9000` / `9001` (loopback only)                                                                         |
+| `admin_allowed_cidrs`                                  | group_vars/all.yml        | `["0.0.0.0/0"]` — open to all; restrict to specific CIDRs to lock down Postgres/MinIO                   |
+| `minio_public_buckets`                                 | roles/minio/defaults      | `["diotek"]`                                                                                            |
+| `minio_scoped_users`                                   | group_vars/all.yml        | per-user MinIO accounts, with `name` and `buckets` only; passwords are stored in `group_vars/vault.yml` |
+| `minio_scoped_user_passwords`                          | group_vars/vault.yml      | map of scoped MinIO usernames to secret passwords                                                       |
+| `n8n_domain`                                           | group_vars/all.yml        | `n8n.diotek.pp.ua`                                                                                      |
+| `n8n_port`                                             | group_vars/all.yml        | `5678` (loopback only)                                                                                  |
+| `n8n_db_name` / `n8n_db_user`                          | group_vars/all.yml        | `n8n`                                                                                                   |
+| `n8n_db_password`                                      | group_vars/all.yml        | `""` — pass via `--extra-vars`/vault                                                                    |
+| `n8n_encryption_key`                                   | group_vars/all.yml        | `""` — pass via `--extra-vars`/vault; >= 32 chars, never rotate without migrating credentials           |
+| `n8n_version`                                          | roles/n8n/defaults        | `"2.27.4"`                                                                                              |
+| `node_major`                                           | roles/nodejs/defaults     | `"24"`                                                                                                  |
+| `pm2_version`                                          | roles/nodejs/defaults     | `"5.4.3"`                                                                                               |
+| `ssh_port`                                             | roles/firewall/defaults   | `22`                                                                                                    |
+| `nginx_repo_branch`                                    | roles/webserver/defaults  | `""` (stable)                                                                                           |
+| `certbot_webroot`                                      | roles/webserver/defaults  | `/var/www/certbot`                                                                                      |
+| `letsencrypt_email`                                    | roles/webserver/defaults  | `""` (no email)                                                                                         |
+| `postgres_shared_buffers` / `postgres_max_connections` | roles/postgresql/defaults | `32MB` / `20`                                                                                           |
 
 ## Network exposure
 

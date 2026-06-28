@@ -1,0 +1,14 @@
+---
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: restart n8n
+  ansible.builtin.systemd:
+    name: n8n
+    state: restarted
+
+- name: reload postgresql
+  ansible.builtin.systemd:
+    name: postgresql
+    state: reloaded

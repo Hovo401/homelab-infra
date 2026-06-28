@@ -1,0 +1,18 @@
+[Unit]
+Description=n8n workflow automation
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=n8n
+Group=n8n
+WorkingDirectory={{ n8n_data_dir }}
+EnvironmentFile=/etc/default/n8n
+Environment=N8N_USER_FOLDER={{ n8n_data_dir }}
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env n8n start
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

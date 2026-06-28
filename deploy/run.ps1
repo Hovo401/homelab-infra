@@ -1,5 +1,12 @@
 param([Parameter(ValueFromRemainingArguments)]$a)
 if (-not $a) { $a = @('ansible-playbook','site.yml','--ask-become-pass') }
+elseif ($a[0] -eq 'vault') {
+  if ($a.Length -gt 1) {
+    $a = @('ansible-vault') + $a[1..($a.Length - 1)]
+  } else {
+    $a = @('ansible-vault','--help')
+  }
+}
 elseif ($a[0] -like '-*') { $a = @('ansible-playbook','site.yml','--ask-become-pass') + $a }
 
 $image = 'willhallonline/ansible:2.18-ubuntu-24.04'

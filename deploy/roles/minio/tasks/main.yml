@@ -105,7 +105,8 @@
 - name: Ensure scoped MinIO user passwords are set
   ansible.builtin.assert:
     that:
-      - item.password | length >= 8
+      - "(minio_scoped_user_passwords | default({}))[item.name] is defined"
+      - "(minio_scoped_user_passwords | default({}))[item.name] | length >= 8"
     fail_msg: >-
       minio_scoped_users entry '{{ item.name }}' has no password or it is
       shorter than 8 characters. Pass real values via --extra-vars or
@@ -125,7 +126,9 @@
 
 - name: Create scoped MinIO users
   ansible.builtin.command:
-    cmd: "mc admin user add local {{ item.name }} {{ item.password }}"
+    cmd: >-
+      mc admin user add local {{ item.name }}
+      {{ (minio_scoped_user_passwords | default({}))[item.name] }}
   register: mc_user_add
   changed_when: "'Added user' in mc_user_add.stdout"
   no_log: true

@@ -1,0 +1,136 @@
+---
+- name: Ensure n8n_db_password is set
+  ansible.builtin.assert:
+    that:
+      - n8n_db_password | length >= 8
+    fail_msg: >-
+      n8n_db_password is empty or shorter than 8 characters. Pass it via
+      --extra-vars or ansible-vault, e.g. --extra-vars "n8n_db_password=...";
+      never commit a real value.
+
+- name: Ensure n8n_encryption_key is set
+  ansible.builtin.assert:
+    that:
+      - n8n_encryption_key | length >= 32
+    fail_msg: >-
+      n8n_encryption_key is empty or shorter than 32 characters. n8n uses it
+      to encrypt stored credentials — losing/changing it locks out existing
+      credentials. Pass it via --extra-vars or ansible-vault, e.g.
+      --extra-vars "n8n_encryption_key=..."; never commit a real value.
+
+- name: Create n8n application database
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_db:
+    name: "{{ n8n_db_name }}"
+    owner: "{{ n8n_db_user }}"
+
+- name: Create n8n application database role
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    db: "{{ n8n_db_name }}"
+    name: "{{ n8n_db_user }}"
+    password: "{{ n8n_db_password }}"
+    priv: ALL
+    state: present
+
+- name: Grant n8n full access to the public schema
+  become: true
+  become_user: postgres
+  ansible.builtin.shell: |
+    psql -d "{{ n8n_db_name }}" <<'EOSQL'
+    GRANT ALL ON SCHEMA public TO "{{ n8n_db_user }}";
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "{{ n8n_db_user }}";
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "{{ n8n_db_user }}";
+    GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO "{{ n8n_db_user }}";
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO "{{ n8n_db_user }}";
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO "{{ n8n_db_user }}";
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO "{{ n8n_db_user }}";
+    EOSQL
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Allow n8n to connect to its database over loopback
+  community.postgresql.postgresql_pg_hba:
+    dest: "{{ pg_conf_dir }}/pg_hba.conf"
+    contype: host
+    address: 127.0.0.1/32
+    databases: "{{ n8n_db_name }}"
+    users: "{{ n8n_db_user }}"
+    method: md5
+  notify: reload postgresql
+
+- name: Apply pending postgresql config changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Create n8n system group
+  ansible.builtin.group:
+    name: n8n
+    system: true
+
+- name: Create n8n system user
+  ansible.builtin.user:
+    name: n8n
+    group: n8n
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ n8n_data_dir }}"
+    create_home: false
+
+- name: Create n8n data directory
+  ansible.builtin.file:
+    path: "{{ n8n_data_dir }}"
+    state: directory
+    owner: n8n
+    group: n8n
+    mode: "0750"
+
+- name: Check the installed n8n version
+  ansible.builtin.command:
+    cmd: /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin n8n --version
+  register: n8n_installed
+  failed_when: false
+  changed_when: false
+
+- name: Install n8n {{ n8n_version }}
+  ansible.builtin.command:
+    cmd: /usr/bin/npm install -g n8n@{{ n8n_version }}
+  environment:
+    NODE_OPTIONS: "--max-old-space-size=1024"
+  when: n8n_installed.rc != 0 or n8n_installed.stdout | trim != n8n_version
+  changed_when: true
+
+- name: Deploy n8n environment file
+  ansible.builtin.template:
+    src: n8n.env.j2
+    dest: /etc/default/n8n
+    owner: root
+    group: n8n
+    mode: "0640"
+  notify: restart n8n
+
+- name: Deploy n8n systemd unit
+  ansible.builtin.template:
+    src: n8n.service.j2
+    dest: /etc/systemd/system/n8n.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart n8n
+
+- name: Apply pending n8n config changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure n8n is enabled and running
+  ansible.builtin.systemd:
+    name: n8n
+    enabled: true
+    state: started
+
+- name: Wait for n8n to accept connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ n8n_port }}"
+    timeout: 30

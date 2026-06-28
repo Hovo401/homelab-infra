@@ -6,19 +6,26 @@ backend_port: 8001 # distinct from paidemail's 8000 — same host, must not coll
 
 db_name: diotek
 db_user: diotek
-db_password: "root"
+db_password: ""
 
 minio_root_user: admin
-minio_root_password: "rootroot"
+minio_root_password: ""
 minio_data_dir: /srv/minio/data
 minio_port: 9000 # bound to 127.0.0.1 only — never opened in ufw
 minio_console_port: 9001 # bound to 127.0.0.1 only — never opened in ufw
 minio_domain: minio.diotek.pp.ua # DNS already points here; second nginx vhost + cert
 minio_scoped_users:
   - name: public
-    password: "12341234"
     buckets:
       - amarant
       - public
+minio_scoped_user_passwords: {}
 
 admin_allowed_cidrs: ["0.0.0.0/0"] # public access to db (5432) and MinIO — opened intentionally
+
+n8n_domain: n8n.diotek.pp.ua # DNS must point here too; third nginx vhost + cert
+n8n_port: 5678 # bound to 127.0.0.1 only — never opened in ufw
+n8n_db_name: n8n
+n8n_db_user: n8n
+n8n_db_password: ""
+n8n_encryption_key: "="
